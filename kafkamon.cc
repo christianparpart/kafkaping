@@ -8,14 +8,18 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 #include <cstdio>
 #include <cinttypes>
 #include <librdkafka/rdkafkacpp.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <mutex>
+#include "LogMessage.h"
 
 // TODO
-// - [ ] expose replication lag (in ms)
+// - [ ] use logging objects with << operator overload (see demo proj)
+// - [ ] expose produer/consumer lag (in ms)
 // - [ ] expose number of hearbeats not flushed yet
 // - [ ] expose number of hearbeats confirmed to be flushed
 // - [ ] expose number of hearbeats consumed
@@ -33,7 +37,8 @@ void dumpConfig(RdKafka::Conf* conf, const std::string& msg) {
 
 class Kafkamon : public RdKafka::EventCb,
                  public RdKafka::DeliveryReportCb,
-                 public RdKafka::ConsumeCb {
+                 public RdKafka::ConsumeCb,
+                 public RdKafka::OffsetCommitCb {
  public:
   Kafkamon(const std::string& brokers, const std::string& topic);
   ~Kafkamon();
@@ -44,43 +49,69 @@ class Kafkamon : public RdKafka::EventCb,
   void event_cb(RdKafka::Event& event) override;
   void dr_cb(RdKafka::Message& message) override;
   void consume_cb(RdKafka::Message& msg, void* opaque) override;
+  void offset_commit_cb(RdKafka::ErrorCode err,
+                        std::vector<RdKafka::TopicPartition*>& offsets) override;
 
-  template<typename... Args>
-  void logError(const std::string& msg, Args... args) {
-    fprintf(stderr, (msg + "\n").c_str(), args...);
-    fflush(stderr);
+  LogMessage logError() {
+    return LogMessage("[ERROR] ", std::bind(&Kafkamon::logPrinter, this, std::placeholders::_1));
   }
 
-  template<typename... Args>
-  void logDebug(const std::string& msg, Args... args) {
-    fprintf(stderr, (msg + "\n").c_str(), args...);
-    fflush(stderr);
+  LogMessage logInfo() {
+    return LogMessage("[INFO] ", std::bind(&Kafkamon::logPrinter, this, std::placeholders::_1));
   }
 
-  template<typename... Args>
-  void logInfo(const std::string& msg, Args... args) {
-    fprintf(stdout, (msg + "\n").c_str(), args...);
+  LogMessage logDebug() {
+    return LogMessage("[DEBUG] ", std::bind(&Kafkamon::logPrinter, this, std::placeholders::_1));
   }
+
+ private:
+  void logPrinter(const std::string& msg) {
+    std::lock_guard<decltype(stderrLock_)> _lk(stderrLock_);
+    fprintf(stderr, "%s\n", msg.c_str());
+  }
+
+  void configureGlobal(const std::string& key, const std::string& val);
+  void configureTopic(const std::string& key, const std::string& val);
 
  private:
   RdKafka::Conf* confGlobal_;
   RdKafka::Conf* confTopic_;
   std::string topicStr_;
   int64_t startOffset_;
+  std::mutex stderrLock_;
 };
 
 Kafkamon::Kafkamon(const std::string& brokers, const std::string& topic)
     : confGlobal_(RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL)),
       confTopic_(RdKafka::Conf::create(RdKafka::Conf::CONF_TOPIC)),
       topicStr_(topic),
-      startOffset_(RdKafka::Topic::OFFSET_BEGINNING) {
+      startOffset_(RdKafka::Topic::OFFSET_STORED) { // _BEGINNING, _END, _STORED
   std::string errstr;
-  confGlobal_->set("metadata.broker.list", brokers, errstr);
   confGlobal_->set("event_cb", (RdKafka::EventCb*) this, errstr);
   confGlobal_->set("dr_cb", (RdKafka::DeliveryReportCb*) this, errstr);
+  confGlobal_->set("metadata.broker.list", brokers, errstr);
+
+  configureGlobal("client.id", "kafkamon");
+  configureGlobal("group.id", "kafkamon");
+  configureGlobal("auto.offset.reset", "latest");
+  configureGlobal("enable.auto.commit", "true");
+  configureGlobal("auto.commit.interval.ms", "true");
+  configureGlobal("request.timeout.ms", "5000");
+  configureGlobal("connections.max.idle.ms", "10000");
+  configureGlobal("message.send.max.retries", "10000");
 
   dumpConfig(confGlobal_, "global");
   dumpConfig(confTopic_, "topic");
+}
+
+void Kafkamon::configureGlobal(const std::string& key, const std::string& val) {
+  std::string errstr;
+  confGlobal_->set(key, val, errstr);
+}
+
+void Kafkamon::configureTopic(const std::string& key, const std::string& val) {
+  std::string errstr;
+  confTopic_->set(key, val, errstr);
 }
 
 Kafkamon::~Kafkamon() {
@@ -92,17 +123,17 @@ void Kafkamon::producerLoop() {
 
   RdKafka::Producer* producer = RdKafka::Producer::create(confGlobal_, errstr);
   if (!producer) {
-    logError("Failed to create producer. %s", errstr.c_str());
+    logError() << "Failed to create producer " << errstr;
     exit(1);
   }
-  std::cout << "$ Created producer " << producer->name() << std::endl;
+  logDebug() << "Created producer " << producer->name();
 
   RdKafka::Topic* topic = RdKafka::Topic::create(producer, topicStr_, confTopic_, errstr);
   if (!topic) {
-    std::cerr << "Failed to create topic: " << errstr << std::endl;
+    logError() << "Failed to create topic: " << errstr;
     exit(1);
   }
-  std::cout << "$ Created topic " << topicStr_ << std::endl;
+  logDebug() << "Created topic " << topicStr_;
 
   for (unsigned long iteration = 0;; ++iteration) {
     std::string payload = std::to_string(iteration);
@@ -112,15 +143,14 @@ void Kafkamon::producerLoop() {
         topic, partition, RdKafka::Producer::RK_MSG_COPY /* Copy payload */,
         const_cast<char*>(payload.c_str()), payload.size(), nullptr, nullptr);
     if (resp != RdKafka::ERR_NO_ERROR)
-      std::cerr << "% Produce failed: " << RdKafka::err2str(resp) << std::endl;
+      logError() << "Produce failed: " << RdKafka::err2str(resp);
     else
-      std::cerr << "% Produced message (" << payload.size() << " bytes): \""
-                << payload << "\"" << std::endl;
+      logError() << "Produced message (" << payload.size() << " bytes): \""
+                << payload << "\"";
 
-    // wait for ACK
+    // wait until flushed (no need to send another message if we can't even handle that)
     while (producer->outq_len() > 0) {
-      std::cerr << "Waiting for " << producer->outq_len() << std::endl;
-      producer->poll(10000);
+      producer->poll(1000);
     }
 
     sleep(1);
@@ -133,20 +163,20 @@ void Kafkamon::consumerLoop() {
   std::string errstr;
   RdKafka::Consumer *consumer = RdKafka::Consumer::create(confGlobal_, errstr);
   if (!consumer) {
-    logError("Failed to create consumer: %s", errstr.c_str());
+    logError() << "Failed to create consumer: " << errstr;
     abort();
   }
-  logDebug("Created consumer %s", consumer->name().c_str());
+  logDebug() << "Created consumer " << consumer->name();
 
   RdKafka::Topic *topic = RdKafka::Topic::create(consumer, topicStr_, confTopic_, errstr);
   if (!topic) {
-    logError("Failed to create consumer topic: %s", errstr.c_str());
+    logError() << "Failed to create consumer topic: " << errstr;
     abort();
   }
 
   RdKafka::ErrorCode resp = consumer->start(topic, partition, startOffset_);
   if (resp != RdKafka::ERR_NO_ERROR) {
-    logError("Failed to start consumer (%d): %s", resp, errstr.c_str());
+    logError() << "Failed to start consumer (" << resp << "): " << RdKafka::err2str(resp);
     abort();
   }
 
@@ -165,66 +195,55 @@ void Kafkamon::consumerLoop() {
 void Kafkamon::event_cb(RdKafka::Event& event) {
   switch (event.type()) {
   case RdKafka::Event::EVENT_ERROR:
-    logError("ERROR (%s): %s", RdKafka::err2str(event.err()).c_str(), event.str().c_str());
+    logError() << RdKafka::err2str(event.err()) << ": " << event.str();
     if (event.err() == RdKafka::ERR__ALL_BROKERS_DOWN)
       abort();
     break;
   case RdKafka::Event::EVENT_STATS:
-    logDebug("STATS: %s", event.str().c_str());
+    logDebug() << "STATS: " << event.str();
     break;
   case RdKafka::Event::EVENT_LOG:
-    logDebug("LOG-%i-%s: %s", event.severity(), event.fac().c_str(), event.str().c_str());
+    logDebug() << "LOG-" << event.severity() << "-" << event.fac() << ": " << event.str();
     break;
   default:
-    std::cerr << "EVENT " << event.type() << " ("
-              << RdKafka::err2str(event.err()) << "): " << event.str()
-              << std::endl;
+    logError() << "EVENT " << event.type() << " ("
+               << RdKafka::err2str(event.err()) << "): " << event.str();
     break;
   }
 }
 
 void Kafkamon::dr_cb(RdKafka::Message& message) {
-  printf("[DeliveryReport] topic:%s, offset:%" PRIi64 ", err:%d (%s); \"%s\"\n",
-      message.topic_name().c_str(),
-      message.offset(),
-      message.err(),
-      message.errstr().c_str(),
-      std::string((const char*) message.payload()).c_str());
+  logDebug() << "[DeliveryReport]"
+      << " topic:" << message.topic_name()
+      << " partition:" << message.partition()
+      << " offset:" << message.offset()
+      << " err:" << message.err()
+      << " (" << message.errstr() << ")"
+      << "; \"" << std::string((const char*) message.payload()) << "\""
+      ;
 
   if (message.key())
-    std::cout << "Key: " << *(message.key()) << ";" << std::endl;
+    logDebug() << "Key: " << *(message.key()) << ";";
 }
 
 void Kafkamon::consume_cb(RdKafka::Message& message, void* opaque) {
   switch (message.err()) {
     case RdKafka::ERR__TIMED_OUT:
       break;
-
     case RdKafka::ERR_NO_ERROR:
-      /* Real message */
-      std::cout << "Read msg at offset " << message.offset() << std::endl;
-      if (message.key()) {
-        std::cout << "Key: " << *message.key() << std::endl;
-      }
-      printf("%.*s\n",
-        static_cast<int>(message.len()),
-        static_cast<const char *>(message.payload()));
+      logDebug() << "Consumed message at offset " << message.offset();
       break;
-
     case RdKafka::ERR__PARTITION_EOF:
       /* Last message */
       break;
-
-    case RdKafka::ERR__UNKNOWN_TOPIC:
-    case RdKafka::ERR__UNKNOWN_PARTITION:
-      std::cerr << "Consume failed: " << message.errstr() << std::endl;
-      break;
-
     default:
-      /* Errors */
-      std::cerr << "Consume failed: " << message.errstr() << std::endl;
+      logError() << "Consume failed: " << message.errstr();
       break;
   }
+}
+
+void Kafkamon::offset_commit_cb(RdKafka::ErrorCode err,
+                                std::vector<RdKafka::TopicPartition*>& offsets) {
 }
 
 void printHelp() {
