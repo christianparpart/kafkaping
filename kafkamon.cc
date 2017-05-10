@@ -67,7 +67,18 @@ class Kafkamon : public RdKafka::EventCb,
  private:
   void logPrinter(const std::string& msg) {
     std::lock_guard<decltype(stderrLock_)> _lk(stderrLock_);
-    fprintf(stderr, "%s\n", msg.c_str());
+
+    char ts[20];
+    time_t t = time(nullptr);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    int timed = strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
+
+    if (timed) {
+      fprintf(stderr, "[%s] %s\n", ts, msg.c_str());
+    } else {
+      fprintf(stderr, "%s\n", msg.c_str());
+    }
   }
 
   void configureGlobal(const std::string& key, const std::string& val);
@@ -85,7 +96,7 @@ Kafkamon::Kafkamon(const std::string& brokers, const std::string& topic)
     : confGlobal_(RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL)),
       confTopic_(RdKafka::Conf::create(RdKafka::Conf::CONF_TOPIC)),
       topicStr_(topic),
-      startOffset_(RdKafka::Topic::OFFSET_STORED) { // _BEGINNING, _END, _STORED
+      startOffset_(RdKafka::Topic::OFFSET_END) {
   std::string errstr;
   confGlobal_->set("event_cb", (RdKafka::EventCb*) this, errstr);
   confGlobal_->set("dr_cb", (RdKafka::DeliveryReportCb*) this, errstr);
@@ -93,12 +104,15 @@ Kafkamon::Kafkamon(const std::string& brokers, const std::string& topic)
 
   configureGlobal("client.id", "kafkamon");
   configureGlobal("group.id", "kafkamon");
-  configureGlobal("auto.offset.reset", "latest");
-  configureGlobal("enable.auto.commit", "true");
-  configureGlobal("auto.commit.interval.ms", "true");
+
   configureGlobal("request.timeout.ms", "5000");
   configureGlobal("connections.max.idle.ms", "10000");
-  configureGlobal("message.send.max.retries", "10000");
+  configureGlobal("message.send.max.retries", "10");
+
+  // XXX only interesting if we wanna use the broker's offset store
+  // configureGlobal("enable.auto.commit", "true");
+  // configureGlobal("auto.commit.interval.ms", "true");
+  // configureGlobal("auto.offset.reset", "latest");
 
   dumpConfig(confGlobal_, "global");
   dumpConfig(confTopic_, "topic");
@@ -136,7 +150,9 @@ void Kafkamon::producerLoop() {
   logDebug() << "Created topic " << topicStr_;
 
   for (unsigned long iteration = 0;; ++iteration) {
-    std::string payload = std::to_string(iteration);
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    std::string payload = std::to_string(ts.tv_sec) + "." + std::to_string(ts.tv_nsec);
 
     // produce
     RdKafka::ErrorCode resp = producer->produce(
@@ -155,6 +171,9 @@ void Kafkamon::producerLoop() {
 
     sleep(1);
   }
+
+  delete topic;
+  delete producer;
 }
 
 void Kafkamon::consumerLoop() {
@@ -196,8 +215,8 @@ void Kafkamon::event_cb(RdKafka::Event& event) {
   switch (event.type()) {
   case RdKafka::Event::EVENT_ERROR:
     logError() << RdKafka::err2str(event.err()) << ": " << event.str();
-    if (event.err() == RdKafka::ERR__ALL_BROKERS_DOWN)
-      abort();
+    // if (event.err() == RdKafka::ERR__ALL_BROKERS_DOWN)
+    //   abort();
     break;
   case RdKafka::Event::EVENT_STATS:
     logDebug() << "STATS: " << event.str();

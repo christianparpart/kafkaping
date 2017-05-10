@@ -15,8 +15,10 @@ class LogMessage {
  public:
   LogMessage(const std::string& prefix,
              std::function<void(const std::string&)> flusher)
-      : message_(prefix),
-        flusher_(flusher) {}
+      : message_(),
+        flusher_(flusher) {
+    append(prefix);
+  }
 
   LogMessage(LogMessage&& m)
       : message_(std::move(m.message_)),
