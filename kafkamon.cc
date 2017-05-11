@@ -15,6 +15,7 @@
 #include <getopt.h>
 #include <unistd.h>
 #include <mutex>
+#include <atomic>
 #include "LogMessage.h"
 
 // TODO
@@ -40,7 +41,11 @@ class Kafkamon : public RdKafka::EventCb,
                  public RdKafka::ConsumeCb,
                  public RdKafka::OffsetCommitCb {
  public:
-  Kafkamon(const std::string& brokers, const std::string& topic);
+  Kafkamon(const std::string& brokers,
+           const std::string& topic,
+           int count,
+           int interval,
+           bool debug);
   ~Kafkamon();
 
   void producerLoop();
@@ -61,7 +66,11 @@ class Kafkamon : public RdKafka::EventCb,
   }
 
   LogMessage logDebug() {
-    return LogMessage("[DEBUG] ", std::bind(&Kafkamon::logPrinter, this, std::placeholders::_1));
+    if (debug_) {
+      return LogMessage("[DEBUG] ", std::bind(&Kafkamon::logPrinter, this, std::placeholders::_1));
+    } else {
+      return LogMessage("", [](auto m) {});
+    }
   }
 
  private:
@@ -88,14 +97,24 @@ class Kafkamon : public RdKafka::EventCb,
   RdKafka::Conf* confGlobal_;
   RdKafka::Conf* confTopic_;
   std::string topicStr_;
+  std::atomic<int> count_;
+  int interval_;
+  bool debug_;
   int64_t startOffset_;
   std::mutex stderrLock_;
 };
 
-Kafkamon::Kafkamon(const std::string& brokers, const std::string& topic)
+Kafkamon::Kafkamon(const std::string& brokers,
+                   const std::string& topic,
+                   int count,
+                   int interval,
+                   bool debug)
     : confGlobal_(RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL)),
       confTopic_(RdKafka::Conf::create(RdKafka::Conf::CONF_TOPIC)),
       topicStr_(topic),
+      count_(count),
+      interval_(interval),
+      debug_(debug),
       startOffset_(RdKafka::Topic::OFFSET_END) {
   std::string errstr;
   confGlobal_->set("event_cb", (RdKafka::EventCb*) this, errstr);
@@ -108,6 +127,8 @@ Kafkamon::Kafkamon(const std::string& brokers, const std::string& topic)
   configureGlobal("request.timeout.ms", "5000");
   configureGlobal("connections.max.idle.ms", "10000");
   configureGlobal("message.send.max.retries", "10");
+
+  configureGlobal("queue.buffering.max.ms", "1"); // don't buffer inflights messages
 
   // XXX only interesting if we wanna use the broker's offset store
   // configureGlobal("enable.auto.commit", "true");
@@ -149,7 +170,7 @@ void Kafkamon::producerLoop() {
   }
   logDebug() << "Created topic " << topicStr_;
 
-  for (unsigned long iteration = 0;; ++iteration) {
+  while (count_.load() != 0) {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     std::string payload = std::to_string(ts.tv_sec) + "." + std::to_string(ts.tv_nsec);
@@ -159,21 +180,26 @@ void Kafkamon::producerLoop() {
         topic, partition, RdKafka::Producer::RK_MSG_COPY /* Copy payload */,
         const_cast<char*>(payload.c_str()), payload.size(), nullptr, nullptr);
     if (resp != RdKafka::ERR_NO_ERROR)
-      logError() << "Produce failed: " << RdKafka::err2str(resp);
+      logError() << "Produce failed. " << RdKafka::err2str(resp);
     else
-      logError() << "Produced message (" << payload.size() << " bytes): \""
-                << payload << "\"";
+      logDebug() << "Produced payload:" << payload;
 
     // wait until flushed (no need to send another message if we can't even handle that)
-    while (producer->outq_len() > 0) {
-      producer->poll(1000);
+    if (producer->outq_len()) {
+      do producer->poll(1000);
+      while (producer->outq_len() > 0);
     }
+    if (interval_) {
+      usleep(interval_ * 1000);
+    }
+  }
 
-    sleep(1);
+  while (producer->outq_len() > 0) {
+    producer->poll(1000);
   }
 
   delete topic;
-  delete producer;
+  //FIXME(doesn't return): delete producer;
 }
 
 void Kafkamon::consumerLoop() {
@@ -199,16 +225,18 @@ void Kafkamon::consumerLoop() {
     abort();
   }
 
-  for (;;) {
+  while (count_.load() != 0) {
     consumer->consume_callback(topic, partition, 1000, this, nullptr);
     consumer->poll(0);
   }
 
+  logDebug() << "Stopping consumer";
   consumer->stop(topic, partition);
   consumer->poll(1000);
 
   delete topic;
   delete consumer;
+  logDebug() << "Stopped consumer";
 }
 
 void Kafkamon::event_cb(RdKafka::Event& event) {
@@ -232,14 +260,17 @@ void Kafkamon::event_cb(RdKafka::Event& event) {
 }
 
 void Kafkamon::dr_cb(RdKafka::Message& message) {
-  logDebug() << "[DeliveryReport]"
-      << " topic:" << message.topic_name()
-      << " partition:" << message.partition()
-      << " offset:" << message.offset()
-      << " err:" << message.err()
-      << " (" << message.errstr() << ")"
-      << "; \"" << std::string((const char*) message.payload()) << "\""
-      ;
+  if (message.err()) {
+    logError() << "Devliery Report Failure. " << message.errstr();
+  } else {
+    logDebug()
+        << "Delivered offset:" << message.offset()
+        << " payload:" << std::string((const char*) message.payload(), message.len());
+  }
+
+  if (count_.load() > 0) {
+    --count_;
+  }
 
   if (message.key())
     logDebug() << "Key: " << *(message.key()) << ";";
@@ -250,13 +281,15 @@ void Kafkamon::consume_cb(RdKafka::Message& message, void* opaque) {
     case RdKafka::ERR__TIMED_OUT:
       break;
     case RdKafka::ERR_NO_ERROR:
-      logDebug() << "Consumed message at offset " << message.offset();
+      logDebug()
+          << "Consumed offset:" << message.offset()
+          << " payload:" << std::string((const char*) message.payload(), message.len());
       break;
     case RdKafka::ERR__PARTITION_EOF:
       /* Last message */
       break;
     default:
-      logError() << "Consume failed: " << message.errstr();
+      logError() << "Consume failed. " << message.errstr();
       break;
   }
 }
@@ -266,20 +299,32 @@ void Kafkamon::offset_commit_cb(RdKafka::ErrorCode err,
 }
 
 void printHelp() {
-  printf("Usage: kafkamon [-t topic] [-b brokers]\n");
+  printf("Usage: kafkamon [-t topic] [-b brokers] [-c count] [-i interval_ms]\n");
 }
 
 int main(int argc, char* const argv[]) {
   std::string topic = "kafkamon";
   std::string brokers = "localhost:9092";
+  int count = -1;
+  int interval = 1000; // ms
+  bool debug = false;
 
   for (bool done = false; !done;) {
-    switch (getopt(argc, argv, "b:t:h")) {
+    switch (getopt(argc, argv, "b:t:c:i:hd")) {
+      case 'd':
+        debug = true;
+        break;
       case 'b':
         brokers = optarg;
         break;
       case 't':
         topic = optarg;
+        break;
+      case 'c':
+        count = std::atoi(optarg);
+        break;
+      case 'i':
+        interval = std::atoi(optarg);
         break;
       case 'h':
         printHelp();
@@ -293,7 +338,7 @@ int main(int argc, char* const argv[]) {
     }
   }
 
-  Kafkamon kafkamon(brokers, topic);
+  Kafkamon kafkamon(brokers, topic, count, interval, debug);
 
   std::thread producer(std::bind(&Kafkamon::producerLoop, &kafkamon));
   std::thread consumer(std::bind(&Kafkamon::consumerLoop, &kafkamon));
