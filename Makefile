@@ -3,7 +3,7 @@ CXXFLAGS = -pthread -lpthread -O0 -ggdb #-stdlib=libc++
 
 all: kafkaping
 
-kafkaping: kafkaping.cc LogMessage.h
+kafkaping: kafkaping.cc LogMessage.h Stopwatch.h
 	$(CXX) $(CXXFLAGS) -o $@ $< -std=c++14 -lrdkafka -lrdkafka++
 
 clean:

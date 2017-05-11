@@ -17,6 +17,7 @@
 #include <mutex>
 #include <atomic>
 #include "LogMessage.h"
+#include "Stopwatch.h"
 
 // TODO
 // - [ ] use logging objects with << operator overload (see demo proj)
@@ -35,16 +36,6 @@ void dumpConfig(RdKafka::Conf* conf, const std::string& msg) {
   }
   std::cout << std::endl;
 }
-
-class Stopwatch {
- public:
-  Stopwatch();
-  Stopwatch(timespec start, timespec stop);
-
-  void start();
-  void stop();
-  unsigned elapsedMs();
-};
 
 class Kafkaping : public RdKafka::EventCb,
                  public RdKafka::DeliveryReportCb,
@@ -145,8 +136,10 @@ Kafkaping::Kafkaping(const std::string& brokers,
   // configureGlobal("auto.commit.interval.ms", "true");
   // configureGlobal("auto.offset.reset", "latest");
 
-  dumpConfig(confGlobal_, "global");
-  dumpConfig(confTopic_, "topic");
+  if (debug_) {
+    dumpConfig(confGlobal_, "global");
+    dumpConfig(confTopic_, "topic");
+  }
 }
 
 void Kafkaping::configureGlobal(const std::string& key, const std::string& val) {
@@ -188,7 +181,7 @@ void Kafkaping::producerLoop() {
     // produce
     RdKafka::ErrorCode resp = producer->produce(
         topic, partition, RdKafka::Producer::RK_MSG_COPY /* Copy payload */,
-        const_cast<char*>(payload.c_str()), payload.size(), nullptr, nullptr);
+        const_cast<char*>(payload.c_str()), payload.size() + 1, nullptr, nullptr);
     if (resp != RdKafka::ERR_NO_ERROR)
       logError() << "Produce failed. " << RdKafka::err2str(resp);
     else
@@ -278,10 +271,6 @@ void Kafkaping::dr_cb(RdKafka::Message& message) {
         << " payload:" << std::string((const char*) message.payload(), message.len());
   }
 
-  if (count_.load() > 0) {
-    --count_;
-  }
-
   if (message.key())
     logDebug() << "Key: " << *(message.key()) << ";";
 }
@@ -290,11 +279,31 @@ void Kafkaping::consume_cb(RdKafka::Message& message, void* opaque) {
   switch (message.err()) {
     case RdKafka::ERR__TIMED_OUT:
       break;
-    case RdKafka::ERR_NO_ERROR:
-      logDebug()
-          << "Consumed offset:" << message.offset()
-          << " payload:" << std::string((const char*) message.payload(), message.len());
+    case RdKafka::ERR_NO_ERROR: {
+      if (count_.load() > 0) {
+        --count_;
+      }
+
+      timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+
+      long secs = 0, nsecs = 0;
+      std::sscanf((char*) message.payload(), "%ld.%ld", &secs, &nsecs);
+      timespec beg{secs, nsecs};
+
+      int64_t diff = (now.tv_sec * 1000 + now.tv_nsec / 1000000) -
+                     (beg.tv_sec * 1000 + beg.tv_nsec / 1000000);
+
+      std::string broker = "<unknown>";
+      confGlobal_->get("metadata.broker.list", broker);
+
+      std::cout << "Received from " << broker
+                << " topic " << message.topic_name()
+                << " partition " << message.partition()
+                << " offset " << message.offset()
+                << " payload " << diff << "ms" << std::endl;
       break;
+    }
     case RdKafka::ERR__PARTITION_EOF:
       /* Last message */
       break;
@@ -309,23 +318,20 @@ void Kafkaping::offset_commit_cb(RdKafka::ErrorCode err,
 }
 
 void printHelp() {
-  printf("Usage: kafkaping [-g] [-t topic] [-b brokers] [-c count] [-i interval_ms]\n");
+  printf("Usage: kafkaping [-g] [-t topic] [-c count] [-i interval_ms] [broker list]\n");
 }
 
 int main(int argc, char* const argv[]) {
   std::string topic = "kafkaping";
-  std::string brokers = "localhost:9092";
+  std::string brokers; // = "localhost:9092";
   int count = -1;
   int interval = 1000; // ms
   bool debug = false;
 
   for (bool done = false; !done;) {
-    switch (getopt(argc, argv, "b:t:c:i:hg")) {
+    switch (getopt(argc, argv, "t:c:i:hg")) {
       case 'g':
         debug = true;
-        break;
-      case 'b':
-        brokers = optarg;
         break;
       case 't':
         topic = optarg;
@@ -346,6 +352,20 @@ int main(int argc, char* const argv[]) {
         printHelp();
         return 1;
     }
+  }
+  if (optind < argc) {
+    while (optind < argc) {
+      if (!brokers.empty()) {
+        brokers += ",";
+      }
+      brokers += argv[optind++];
+    }
+  }
+
+  if (brokers.empty()) {
+    fprintf(stderr, "No brokers passed.\n");
+    printHelp();
+    return 1;
   }
 
   Kafkaping kafkaping(brokers, topic, count, interval, debug);
