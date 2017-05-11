@@ -1,5 +1,5 @@
-// This file is part of the "kafkamon" project
-//   <http://github.com/christianparpart/kafkamon>
+// This file is part of the "kafkaping" project
+//   <http://github.com/christianparpart/kafkaping>
 //   (c) 2017 Christian Parpart <christian@parpart.family>
 //
 // Licensed under the MIT License (the "License"); you may not use this
@@ -36,17 +36,27 @@ void dumpConfig(RdKafka::Conf* conf, const std::string& msg) {
   std::cout << std::endl;
 }
 
-class Kafkamon : public RdKafka::EventCb,
+class Stopwatch {
+ public:
+  Stopwatch();
+  Stopwatch(timespec start, timespec stop);
+
+  void start();
+  void stop();
+  unsigned elapsedMs();
+};
+
+class Kafkaping : public RdKafka::EventCb,
                  public RdKafka::DeliveryReportCb,
                  public RdKafka::ConsumeCb,
                  public RdKafka::OffsetCommitCb {
  public:
-  Kafkamon(const std::string& brokers,
+  Kafkaping(const std::string& brokers,
            const std::string& topic,
            int count,
            int interval,
            bool debug);
-  ~Kafkamon();
+  ~Kafkaping();
 
   void producerLoop();
   void consumerLoop();
@@ -58,16 +68,16 @@ class Kafkamon : public RdKafka::EventCb,
                         std::vector<RdKafka::TopicPartition*>& offsets) override;
 
   LogMessage logError() {
-    return LogMessage("[ERROR] ", std::bind(&Kafkamon::logPrinter, this, std::placeholders::_1));
+    return LogMessage("[ERROR] ", std::bind(&Kafkaping::logPrinter, this, std::placeholders::_1));
   }
 
   LogMessage logInfo() {
-    return LogMessage("[INFO] ", std::bind(&Kafkamon::logPrinter, this, std::placeholders::_1));
+    return LogMessage("[INFO] ", std::bind(&Kafkaping::logPrinter, this, std::placeholders::_1));
   }
 
   LogMessage logDebug() {
     if (debug_) {
-      return LogMessage("[DEBUG] ", std::bind(&Kafkamon::logPrinter, this, std::placeholders::_1));
+      return LogMessage("[DEBUG] ", std::bind(&Kafkaping::logPrinter, this, std::placeholders::_1));
     } else {
       return LogMessage("", [](auto m) {});
     }
@@ -104,7 +114,7 @@ class Kafkamon : public RdKafka::EventCb,
   std::mutex stderrLock_;
 };
 
-Kafkamon::Kafkamon(const std::string& brokers,
+Kafkaping::Kafkaping(const std::string& brokers,
                    const std::string& topic,
                    int count,
                    int interval,
@@ -121,8 +131,8 @@ Kafkamon::Kafkamon(const std::string& brokers,
   confGlobal_->set("dr_cb", (RdKafka::DeliveryReportCb*) this, errstr);
   confGlobal_->set("metadata.broker.list", brokers, errstr);
 
-  configureGlobal("client.id", "kafkamon");
-  configureGlobal("group.id", "kafkamon");
+  configureGlobal("client.id", "kafkaping");
+  configureGlobal("group.id", "kafkaping");
 
   configureGlobal("request.timeout.ms", "5000");
   configureGlobal("connections.max.idle.ms", "10000");
@@ -139,20 +149,20 @@ Kafkamon::Kafkamon(const std::string& brokers,
   dumpConfig(confTopic_, "topic");
 }
 
-void Kafkamon::configureGlobal(const std::string& key, const std::string& val) {
+void Kafkaping::configureGlobal(const std::string& key, const std::string& val) {
   std::string errstr;
   confGlobal_->set(key, val, errstr);
 }
 
-void Kafkamon::configureTopic(const std::string& key, const std::string& val) {
+void Kafkaping::configureTopic(const std::string& key, const std::string& val) {
   std::string errstr;
   confTopic_->set(key, val, errstr);
 }
 
-Kafkamon::~Kafkamon() {
+Kafkaping::~Kafkaping() {
 }
 
-void Kafkamon::producerLoop() {
+void Kafkaping::producerLoop() {
   const int32_t partition = RdKafka::Topic::PARTITION_UA;
   std::string errstr;
 
@@ -202,7 +212,7 @@ void Kafkamon::producerLoop() {
   //FIXME(doesn't return): delete producer;
 }
 
-void Kafkamon::consumerLoop() {
+void Kafkaping::consumerLoop() {
   const int32_t partition = 0;
 
   std::string errstr;
@@ -239,7 +249,7 @@ void Kafkamon::consumerLoop() {
   logDebug() << "Stopped consumer";
 }
 
-void Kafkamon::event_cb(RdKafka::Event& event) {
+void Kafkaping::event_cb(RdKafka::Event& event) {
   switch (event.type()) {
   case RdKafka::Event::EVENT_ERROR:
     logError() << RdKafka::err2str(event.err()) << ": " << event.str();
@@ -259,7 +269,7 @@ void Kafkamon::event_cb(RdKafka::Event& event) {
   }
 }
 
-void Kafkamon::dr_cb(RdKafka::Message& message) {
+void Kafkaping::dr_cb(RdKafka::Message& message) {
   if (message.err()) {
     logError() << "Devliery Report Failure. " << message.errstr();
   } else {
@@ -276,7 +286,7 @@ void Kafkamon::dr_cb(RdKafka::Message& message) {
     logDebug() << "Key: " << *(message.key()) << ";";
 }
 
-void Kafkamon::consume_cb(RdKafka::Message& message, void* opaque) {
+void Kafkaping::consume_cb(RdKafka::Message& message, void* opaque) {
   switch (message.err()) {
     case RdKafka::ERR__TIMED_OUT:
       break;
@@ -294,24 +304,24 @@ void Kafkamon::consume_cb(RdKafka::Message& message, void* opaque) {
   }
 }
 
-void Kafkamon::offset_commit_cb(RdKafka::ErrorCode err,
+void Kafkaping::offset_commit_cb(RdKafka::ErrorCode err,
                                 std::vector<RdKafka::TopicPartition*>& offsets) {
 }
 
 void printHelp() {
-  printf("Usage: kafkamon [-t topic] [-b brokers] [-c count] [-i interval_ms]\n");
+  printf("Usage: kafkaping [-g] [-t topic] [-b brokers] [-c count] [-i interval_ms]\n");
 }
 
 int main(int argc, char* const argv[]) {
-  std::string topic = "kafkamon";
+  std::string topic = "kafkaping";
   std::string brokers = "localhost:9092";
   int count = -1;
   int interval = 1000; // ms
   bool debug = false;
 
   for (bool done = false; !done;) {
-    switch (getopt(argc, argv, "b:t:c:i:hd")) {
-      case 'd':
+    switch (getopt(argc, argv, "b:t:c:i:hg")) {
+      case 'g':
         debug = true;
         break;
       case 'b':
@@ -338,10 +348,10 @@ int main(int argc, char* const argv[]) {
     }
   }
 
-  Kafkamon kafkamon(brokers, topic, count, interval, debug);
+  Kafkaping kafkaping(brokers, topic, count, interval, debug);
 
-  std::thread producer(std::bind(&Kafkamon::producerLoop, &kafkamon));
-  std::thread consumer(std::bind(&Kafkamon::consumerLoop, &kafkamon));
+  std::thread producer(std::bind(&Kafkaping::producerLoop, &kafkaping));
+  std::thread consumer(std::bind(&Kafkaping::consumerLoop, &kafkaping));
 
   producer.join();
   consumer.join();

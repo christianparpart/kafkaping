@@ -1,12 +1,12 @@
 CXX = clang++-3.9
 CXXFLAGS = -pthread -lpthread -O0 -ggdb #-stdlib=libc++
 
-all: kafkamon
+all: kafkaping
 
-kafkamon: kafkamon.cc
+kafkaping: kafkaping.cc LogMessage.h
 	$(CXX) $(CXXFLAGS) -o $@ $< -std=c++14 -lrdkafka -lrdkafka++
 
 clean:
-	rm -f kafkamon
+	rm -f kafkaping
 
 .PHONY: clean all
