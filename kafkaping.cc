@@ -17,7 +17,6 @@
 #include <mutex>
 #include <atomic>
 #include "LogMessage.h"
-#include "Stopwatch.h"
 
 // TODO
 // - [ ] use logging objects with << operator overload (see demo proj)
