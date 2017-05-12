@@ -19,13 +19,11 @@
 #include "LogMessage.h"
 
 // TODO
-// - [ ] use logging objects with << operator overload (see demo proj)
-// - [ ] expose produer/consumer lag (in ms)
-// - [ ] expose number of hearbeats not flushed yet
-// - [ ] expose number of hearbeats confirmed to be flushed
-// - [ ] expose number of hearbeats consumed
-// - [ ] expose failure-$type count
-// - [ ] support partitioning
+// - [x] use logging objects with << operator overload (see demo proj)
+// - [x] expose produer/consumer lag (in ms)
+// - [ ] CLI: provide summary stats at exit
+// - [ ] daemon mode to expose borgmon compatible stats
+// - [ ] daemon mode to expose prometheus_exporter compatible stats
 
 void dumpConfig(RdKafka::Conf* conf, const std::string& msg) {
   std::cout << "============================== " << msg << std::endl;
