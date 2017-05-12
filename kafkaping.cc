@@ -18,13 +18,6 @@
 #include <atomic>
 #include "LogMessage.h"
 
-// TODO
-// - [x] use logging objects with << operator overload (see demo proj)
-// - [x] expose produer/consumer lag (in ms)
-// - [ ] CLI: provide summary stats at exit
-// - [ ] daemon mode to expose borgmon compatible stats
-// - [ ] daemon mode to expose prometheus_exporter compatible stats
-
 void dumpConfig(RdKafka::Conf* conf, const std::string& msg) {
   std::cout << "============================== " << msg << std::endl;
   auto d = conf->dump();
