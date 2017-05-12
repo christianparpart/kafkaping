@@ -382,7 +382,12 @@ void Kafkaping::offset_commit_cb(RdKafka::ErrorCode err,
 }
 
 void printHelp() {
-  printf("Usage: kafkaping [-g] [-t topic] [-c count] [-i interval_ms] [broker list]\n");
+  printf("Usage: kafkaping [-g] [-t topic] [-c count] [-i interval_ms] [broker list]\n"
+         "\n"
+         "  -g        Increases debugging print verbosity\n"
+         "  -t TOPIC  What Kafka topic to use for producing/consuming messages [kafkaping]\n"
+         "  -c COUNT  Number of messages to send & receive before quitting [unlimited]\n"
+         "  -i MSECS  Time to wait between to pings\n");
 }
 
 int main(int argc, char* const argv[]) {

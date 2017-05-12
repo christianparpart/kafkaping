@@ -6,20 +6,24 @@ into a broker's topic, and consuming, measuring the latency between them.
 ### Usage
 
 ```
-kafkaping [-g] [-t topic] [-c count] [-i interval_ms] [broker list]
+Usage: kafkaping [-g] [-t topic] [-c count] [-i interval_ms] [broker list]
 
-  -g        Enables debugging prints
+  -g        Increases debugging print verbosity
   -t TOPIC  What Kafka topic to use for producing/consuming messages [kafkaping]
   -c COUNT  Number of messages to send & receive before quitting [unlimited]
-  -i MSECS  time to wait between to pings
+  -i MSECS  Time to wait between to pings
 ```
 
 ### Example
 
 ```sh
 # kafkaping -c4 localhost
-Received from localhost: topic=kafkaping partition=0 offset=307 time=247 ms
-Received from localhost: topic=kafkaping partition=0 offset=308 time=17 ms
-Received from localhost: topic=kafkaping partition=0 offset=309 time=14 ms
-Received from localhost: topic=kafkaping partition=0 offset=310 time=14 ms
+Received from localhost: topic=kafkaping partition=0 offset=385 time=126 ms
+Received from localhost: topic=kafkaping partition=0 offset=386 time=17 ms
+Received from localhost: topic=kafkaping partition=0 offset=387 time=12 ms
+Received from localhost: topic=kafkaping partition=0 offset=388 time=13 ms
+
+--- localhost ping statistics ---
+4 messages received, time 5222ms
+rtt min/avg/max = 12/42/126 ms
 ```
