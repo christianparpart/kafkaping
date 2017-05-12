@@ -27,16 +27,52 @@ void dumpConfig(RdKafka::Conf* conf, const std::string& msg) {
   std::cout << std::endl;
 }
 
+class StatsSink {
+ public:
+  ~StatsSink() {}
+
+  virtual void fill(const std::string& broker,
+                    const std::string& topic,
+                    int partition,
+                    int64_t offset,
+                    int64_t ts,
+                    unsigned latencyMs) = 0;
+};
+
+class ConsoleSink : public StatsSink {
+ public:
+  void fill(const std::string& broker,
+            const std::string& topic,
+            int partition,
+            int64_t offset,
+            int64_t ts,
+            unsigned latencyMs) override;
+};
+
+void ConsoleSink::fill(const std::string& broker,
+                       const std::string& topic,
+                       int partition,
+                       int64_t offset,
+                       int64_t ts,
+                       unsigned latencyMs) {
+  std::cout << "Received from " << broker << ":"
+            << " topic=" << topic
+            << " partition=" << partition
+            << " offset=" << offset
+            << " time=" << latencyMs << " ms" << std::endl;
+}
+
 class Kafkaping : public RdKafka::EventCb,
-                 public RdKafka::DeliveryReportCb,
-                 public RdKafka::ConsumeCb,
-                 public RdKafka::OffsetCommitCb {
+                  public RdKafka::DeliveryReportCb,
+                  public RdKafka::ConsumeCb,
+                  public RdKafka::OffsetCommitCb {
  public:
   Kafkaping(const std::string& brokers,
-           const std::string& topic,
-           int count,
-           int interval,
-           bool debug);
+            const std::string& topic,
+            int count,
+            int interval,
+            bool debug,
+            StatsSink* sink);
   ~Kafkaping();
 
   void producerLoop();
@@ -93,20 +129,23 @@ class Kafkaping : public RdKafka::EventCb,
   bool debug_;
   int64_t startOffset_;
   std::mutex stderrLock_;
+  StatsSink* sink_;
 };
 
 Kafkaping::Kafkaping(const std::string& brokers,
-                   const std::string& topic,
-                   int count,
-                   int interval,
-                   bool debug)
+                     const std::string& topic,
+                     int count,
+                     int interval,
+                     bool debug,
+                     StatsSink* sink)
     : confGlobal_(RdKafka::Conf::create(RdKafka::Conf::CONF_GLOBAL)),
       confTopic_(RdKafka::Conf::create(RdKafka::Conf::CONF_TOPIC)),
       topicStr_(topic),
       count_(count),
       interval_(interval),
       debug_(debug),
-      startOffset_(RdKafka::Topic::OFFSET_END) {
+      startOffset_(RdKafka::Topic::OFFSET_END),
+      sink_(sink) {
   std::string errstr;
   confGlobal_->set("event_cb", (RdKafka::EventCb*) this, errstr);
   confGlobal_->set("dr_cb", (RdKafka::DeliveryReportCb*) this, errstr);
@@ -287,11 +326,8 @@ void Kafkaping::consume_cb(RdKafka::Message& message, void* opaque) {
       std::string broker = "<unknown>";
       confGlobal_->get("metadata.broker.list", broker);
 
-      std::cout << "Received from " << broker << ":"
-                << " topic=" << message.topic_name()
-                << " partition=" << message.partition()
-                << " offset=" << message.offset()
-                << " time=" << diff << " ms" << std::endl;
+      sink_->fill(broker, message.topic_name(), message.partition(),
+                  message.offset(), message.timestamp().timestamp, diff);
       break;
     }
     case RdKafka::ERR__PARTITION_EOF:
@@ -358,7 +394,8 @@ int main(int argc, char* const argv[]) {
     return 1;
   }
 
-  Kafkaping kafkaping(brokers, topic, count, interval, debug);
+  ConsoleSink consoleSink;
+  Kafkaping kafkaping(brokers, topic, count, interval, debug, &consoleSink);
 
   std::thread producer(std::bind(&Kafkaping::producerLoop, &kafkaping));
   std::thread consumer(std::bind(&Kafkaping::consumerLoop, &kafkaping));
