@@ -29,11 +29,9 @@ void dumpConfig(RdKafka::Conf* conf, const std::string& msg) {
 
 class StatsSink {
  public:
-  ~StatsSink() {}
+  virtual ~StatsSink() {}
 
-  virtual void fill(const std::string& broker,
-                    const std::string& topic,
-                    int partition,
+  virtual void fill(int partition,
                     int64_t offset,
                     int64_t ts,
                     unsigned latencyMs) = 0;
@@ -41,25 +39,65 @@ class StatsSink {
 
 class ConsoleSink : public StatsSink {
  public:
-  void fill(const std::string& broker,
-            const std::string& topic,
-            int partition,
+  ConsoleSink(const std::string& broker, const std::string& topic);
+  ~ConsoleSink();
+
+  void fill(int partition,
             int64_t offset,
             int64_t ts,
             unsigned latencyMs) override;
+
+ private:
+  std::string broker_;
+  std::string topic_;
+  timespec startedAt_;
+  std::list<unsigned> latencies_;
 };
 
-void ConsoleSink::fill(const std::string& broker,
-                       const std::string& topic,
-                       int partition,
+ConsoleSink::ConsoleSink(const std::string& broker, const std::string& topic)
+    : broker_(broker),
+      topic_(topic),
+      startedAt_(),
+      latencies_() {
+  clock_gettime(CLOCK_MONOTONIC, &startedAt_);
+}
+
+ConsoleSink::~ConsoleSink() {
+  timespec finishedAt;
+  clock_gettime(CLOCK_MONOTONIC, &finishedAt);
+
+  int64_t timeMs = (finishedAt.tv_sec * 1000 + finishedAt.tv_nsec / 1000000) -
+                   (startedAt_.tv_sec * 1000 + startedAt_.tv_nsec / 1000000);
+
+  unsigned totalMs = 0, minMs = 0, maxMs = 0;
+  for (unsigned ms: latencies_) {
+    if (ms > maxMs)
+      maxMs = ms;
+
+    if (ms < minMs || !minMs)
+      minMs = ms;
+
+    totalMs += ms;
+  }
+  unsigned avgMs = totalMs / latencies_.size();
+
+  std::cout << std::endl
+            << "--- " << broker_ << " ping statistics ---" << std::endl
+            << latencies_.size() << " messages received, time " << timeMs << "ms" << std::endl
+            << "rtt min/avg/max = " << minMs << "/" << avgMs << "/" << maxMs << " ms" << std::endl;
+}
+
+void ConsoleSink::fill(int partition,
                        int64_t offset,
                        int64_t ts,
                        unsigned latencyMs) {
-  std::cout << "Received from " << broker << ":"
-            << " topic=" << topic
+  std::cout << "Received from " << broker_ << ":"
+            << " topic=" << topic_
             << " partition=" << partition
             << " offset=" << offset
             << " time=" << latencyMs << " ms" << std::endl;
+
+  latencies_.emplace_back(latencyMs);
 }
 
 class Kafkaping : public RdKafka::EventCb,
@@ -326,8 +364,8 @@ void Kafkaping::consume_cb(RdKafka::Message& message, void* opaque) {
       std::string broker = "<unknown>";
       confGlobal_->get("metadata.broker.list", broker);
 
-      sink_->fill(broker, message.topic_name(), message.partition(),
-                  message.offset(), message.timestamp().timestamp, diff);
+      sink_->fill(message.partition(), message.offset(),
+                  message.timestamp().timestamp, diff);
       break;
     }
     case RdKafka::ERR__PARTITION_EOF:
@@ -349,13 +387,13 @@ void printHelp() {
 
 int main(int argc, char* const argv[]) {
   std::string topic = "kafkaping";
-  std::string brokers; // = "localhost:9092";
+  std::string broker; // = "localhost:9092";
   int count = -1;
   int interval = 1000; // ms
   bool debug = false;
 
   for (bool done = false; !done;) {
-    switch (getopt(argc, argv, "t:c:i:hg")) {
+    switch (getopt(argc, argv, "t:c:i:hg:S:")) {
       case 'g':
         debug = true;
         break;
@@ -368,6 +406,9 @@ int main(int argc, char* const argv[]) {
       case 'i':
         interval = std::atoi(optarg);
         break;
+      // case 'S':
+      //   sink.reset(new StatsdSink(optarg));
+      //   break;
       case 'h':
         printHelp();
         return 0;
@@ -381,21 +422,22 @@ int main(int argc, char* const argv[]) {
   }
   if (optind < argc) {
     while (optind < argc) {
-      if (!brokers.empty()) {
-        brokers += ",";
+      if (!broker.empty()) {
+        broker += ",";
       }
-      brokers += argv[optind++];
+      broker += argv[optind++];
     }
   }
 
-  if (brokers.empty()) {
-    fprintf(stderr, "No brokers passed.\n");
+  std::unique_ptr<StatsSink> sink(new ConsoleSink(broker, topic));
+
+  if (broker.empty()) {
+    fprintf(stderr, "No broker passed.\n");
     printHelp();
     return 1;
   }
 
-  ConsoleSink consoleSink;
-  Kafkaping kafkaping(brokers, topic, count, interval, debug, &consoleSink);
+  Kafkaping kafkaping(broker, topic, count, interval, debug, sink.get());
 
   std::thread producer(std::bind(&Kafkaping::producerLoop, &kafkaping));
   std::thread consumer(std::bind(&Kafkaping::consumerLoop, &kafkaping));
