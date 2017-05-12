@@ -294,11 +294,11 @@ void Kafkaping::consume_cb(RdKafka::Message& message, void* opaque) {
       std::string broker = "<unknown>";
       confGlobal_->get("metadata.broker.list", broker);
 
-      std::cout << "Received from " << broker
-                << " topic " << message.topic_name()
-                << " partition " << message.partition()
-                << " offset " << message.offset()
-                << " payload " << diff << "ms" << std::endl;
+      std::cout << "Received from " << broker << ":"
+                << " topic=" << message.topic_name()
+                << " partition=" << message.partition()
+                << " offset=" << message.offset()
+                << " time=" << diff << " ms" << std::endl;
       break;
     }
     case RdKafka::ERR__PARTITION_EOF:
