@@ -18,8 +18,8 @@ kafkaping [-g] [-t topic] [-c count] [-i interval_ms] [broker list]
 
 ```sh
 # kafkaping -c4 localhost
-Received from localhost topic kafkaping partition 0 offset 144 payload 228ms
-Received from localhost topic kafkaping partition 0 offset 145 payload 15ms
-Received from localhost topic kafkaping partition 0 offset 146 payload 18ms
-Received from localhost topic kafkaping partition 0 offset 147 payload 19ms
+Received from localhost: topic=kafkaping partition=0 offset=307 time=247 ms
+Received from localhost: topic=kafkaping partition=0 offset=308 time=17 ms
+Received from localhost: topic=kafkaping partition=0 offset=309 time=14 ms
+Received from localhost: topic=kafkaping partition=0 offset=310 time=14 ms
 ```
