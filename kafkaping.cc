@@ -434,13 +434,13 @@ int main(int argc, char* const argv[]) {
     }
   }
 
-  std::unique_ptr<StatsSink> sink(new ConsoleSink(broker, topic));
-
   if (broker.empty()) {
     fprintf(stderr, "No broker passed.\n");
     printHelp();
     return 1;
   }
+
+  std::unique_ptr<StatsSink> sink(new ConsoleSink(broker, topic));
 
   Kafkaping kafkaping(broker, topic, count, interval, debug, sink.get());
 
