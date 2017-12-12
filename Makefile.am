@@ -16,6 +16,7 @@ TESTS =
 
 AM_CXXFLAGS = \
 	$(BASE_CXXFLAGS) \
+	$(RDKAFKA_CFLAGS) \
 	-I$(top_builddir) \
 	-I$(top_srcdir)
 

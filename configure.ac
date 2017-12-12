@@ -36,8 +36,7 @@ AS_IF([test "x$uname_system" = xLinux],
 AC_SUBST([PLATFORM_CXXFLAGS])
 AC_SUBST([PLATFORM_LDFLAGS])
 
-RDKAFKA_LIBS="-lrdkafka -lrdkafka++"
-AC_SUBST([RDKAFKA_LIBS])
+PKG_CHECK_MODULES([RDKAFKA], [rdkafka rdkafka++], [HAVE_LIBRDKAFKA=1])
 
 ####### OUTPUT ################################################################
 
