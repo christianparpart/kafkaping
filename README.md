@@ -27,3 +27,16 @@ Received from localhost: topic=kafkaping partition=0 offset=388 time=13 ms
 4 messages received, time 5222ms
 rtt min/avg/max = 12/42/126 ms
 ```
+
+### Build time dependencies
+```sh
+sudo apt install autoconf automake make g++ pkg-config librdkafka-dev
+```
+
+### How to build
+```sh
+./autogen.sh
+./configure
+make
+sudo make install
+```
