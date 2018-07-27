@@ -276,14 +276,17 @@ void Kafkaping::consumerLoop() {
   const int32_t partition = 0;
 
   std::string errstr;
-  RdKafka::Consumer *consumer = RdKafka::Consumer::create(confGlobal_, errstr);
+  std::unique_ptr<RdKafka::Consumer> consumer = RdKafka::Consumer::create(confGlobal_, errstr);
   if (!consumer) {
     logError() << "Failed to create consumer: " << errstr;
     abort();
   }
   logDebug() << "Created consumer " << consumer->name();
 
-  RdKafka::Topic *topic = RdKafka::Topic::create(consumer, topicStr_, confTopic_, errstr);
+  std::unique_ptr<RdKafka::Topic> topic(RdKafka::Topic::create(consumer.get(),
+                                                               topicStr_,
+                                                               confTopic_,
+                                                               errstr));
   if (!topic) {
     logError() << "Failed to create consumer topic: " << errstr;
     abort();
@@ -304,8 +307,6 @@ void Kafkaping::consumerLoop() {
   consumer->stop(topic, partition);
   consumer->poll(1000);
 
-  delete topic;
-  delete consumer;
   logDebug() << "Stopped consumer";
 }
 
